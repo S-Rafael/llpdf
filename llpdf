@@ -1,0 +1,779 @@
+#!/bin/bash	
+#
+#   llpdf -- Lossless conversion of raster images into multi-page 
+#            pdfs using ghostscript and ImageMagick
+#
+#   Author: Rafael M. Siejakowski; www.rs-math.net
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#
+#=============== User-editable options ========================================
+#
+#
+# Default metod of scaling images
+DEFAULT_MODE='a' # Run in aspect-ratio preserving mode by default
+#DEFAULT_MODE='s' # Run in stretching mode by default
+#
+#
+# Paper settings
+DEFAULT_PAPER="A4" # Default paper format
+DEFAULT_MARGIN=0 # Default margin width
+DEFAULT_UNIT='mm' # Default unit of measurement
+#
+#
+declare -A PAPER_SIZE # Do not touch this!
+#
+# -------------- Paper dimensions ---------------------------------------------
+#
+# Below are the definitions of paper dimensions used by llpdf.
+# If you need a custom paper format, you can add it to the 
+# array PAPER_SIZE below.
+# The array key is the name of the paper format (to be used
+# on the command line, case insensitive). 
+# The dimensions are given in Postscript points (1 inch = 72 points)
+# and written as <width>x<height>.
+#
+PAPER_SIZE["11X17"]="792x1224"
+PAPER_SIZE["Ledger"]="1224x792"
+PAPER_SIZE["Legal"]="612x1008"
+PAPER_SIZE["Letter"]="612x792"
+PAPER_SIZE["archE"]="2592x3456"
+PAPER_SIZE["archD"]="1728x2592"
+PAPER_SIZE["archC"]="1296x1728"
+PAPER_SIZE["archB"]="864x1296"
+PAPER_SIZE["archA"]="648x864"
+PAPER_SIZE["A0"]="2384x3370"
+PAPER_SIZE["A1"]="1684x2384"
+PAPER_SIZE["A2"]="1191x1684"
+PAPER_SIZE["A3"]="842x1191"
+PAPER_SIZE["A4"]="595x842"
+PAPER_SIZE["A5"]="420x595"
+PAPER_SIZE["A6"]="297x420"
+PAPER_SIZE["A7"]="210x297"
+PAPER_SIZE["A8"]="148x210"
+PAPER_SIZE["A9"]="105x148"
+PAPER_SIZE["A10"]="73x105"
+PAPER_SIZE["B0"]="2835x4008"
+PAPER_SIZE["B1"]="2004x2835"
+PAPER_SIZE["B2"]="1417x2004"
+PAPER_SIZE["B3"]="1001x1417"
+PAPER_SIZE["B4"]="709x1001"
+PAPER_SIZE["B5"]="499x709"
+PAPER_SIZE["B6"]="354x499"
+PAPER_SIZE["C0"]="2599x3677"
+PAPER_SIZE["C1"]="1837x2599"
+PAPER_SIZE["C2"]="1298x1837"
+PAPER_SIZE["C3"]="918x1298"
+PAPER_SIZE["C4"]="649x918"
+PAPER_SIZE["C5"]="459x649"
+PAPER_SIZE["C6"]="323x459"
+PAPER_SIZE["Slide"]="100x75"
+PAPER_SIZE["beamer"]="363x272"
+# Add your custom paper sizes here:
+#PAPER_SIZE["leet"]="1337x1337"
+#
+#
+#======================== End of user preferences =============================
+# Do not edit the code below unless you know what you are doing.
+# 
+# Global variables controlling script behaviour
+declare -a INFILES
+OUTFILE="-"
+MODE="$DEFAULT_MODE"
+declare -i VERBOSE=0
+declare -i FORCING=0
+declare -i INTERPOLATE=0
+declare -i LANDSCAPE=0
+MARGIN=$DEFAULT_MARGIN
+PAPER_SELECTION=$DEFAULT_PAPER
+VALID_UNITS=("cm" "mm" "pt" "bp" "dd" "cc" "pc" "in" "sp") 
+log=7 # File descriptor for messages
+exec 7>&1 # Redirect to stdout
+#
+#======================== Function definitions ================================
+#
+#
+### analyse_option()
+# This function analyses a word recursively
+# and searches for letters associated with commandline switches.
+# Global variables are modified accordingly.
+analyse_option()
+{
+	local opt_word="$1"
+	case "${opt_word:0:1}" in
+		a)	MODE='a';;
+		s)	MODE='s';;
+		v)	VERBOSE=1;;
+		f)	FORCING=1;;
+		i)	INTERPOLATE=1;;
+		m)	if [[ "m${opt_word:1:1}" == "m=" ]]; then
+				MARGIN=${opt_word:2}
+				opt_word=""
+			elif [[ "--${opt_word:0:7}" == "--margin=" ]]
+			then
+				MARGIN=${opt_word:7}
+				opt_word=""
+			fi;;
+		l)	if [[ "--${opt_word:0:4}" == "--list" ]]; then
+				MODE='l'
+				opt_word=""
+			elif [[ "--${opt_word:0:9}" == "--landscape" ]]; then
+				LANDSCAPE=1
+				opt_word=""
+			fi;;
+		p)	if [[ "p${opt_word:1:1}" == "p=" ]]; then
+				PAPER_SELECTION=${opt_word:2}
+				opt_word=""
+			fi;;
+		h)	if [[ "--${opt_word:0:4}" == "--help" ]]; then
+				MODE='h'
+				opt_word=""
+			fi;;
+	esac
+	if [[ "${#opt_word}" -gt 1 ]];
+	then
+		analyse_option "${opt_word:1}"
+	fi
+}
+# -------------------------------------------------------------------
+#
+### print_help()
+# Prints the help screen (activated by the --help command line param)
+print_help()
+{
+	# Terminal format codes
+	local N="\x1b[0m"
+	local B="\x1b[1m"
+	local U="\x1b[4m"
+	local self="$0"
+	echo -ne "
+${B}llpdf${N} - create PDFs based on losslessly compressed raster graphics.
+
+${U}Usage${N}: $self [options] infile1 [infile2 [infile3 ... ]] outfile
+
+llpdf creates a multi-page PDF file of specified paper size with one input
+raster image on each page. Image quality is preserved, since only lossless
+compression is applied. Scaling and interpolation are performed using only
+PDF mechanisms, so all pixels of the original images are faithfully repre-
+sented in the output file. llpdf uses ${U}ImageMagick${N} and ${U}ghostscript${N} to gene-
+rate PDFs, so these tools are required on your system (and in PATH). Input
+files can be any raster images supported by ImageMagick.
+
+${U}Available options${N}:
+
+      ${B}-s${N}                    Stretching mode. "
+	if [[ "x$DEFAULT_MODE" == "xs" ]]; then echo -ne "${B}(default)${N}"; fi
+	echo -ne "
+                            Each image is stretched to fit the usable page
+                            area (the whole page minus the margins).
+
+      ${B}-a${N}                    Aspect ratio preserving mode. "
+	if [[ "x$DEFAULT_MODE" == "xa" ]]; then echo -ne "${B}(default)${N}"; fi
+	echo -e "
+                            Each image is scaled uniformly to preserve its
+                            original aspect ratio. Pixels remain square.
+
+      ${B}--margin=X,${N} 
+      ${B}-m=X${N}                  Set margin width to X. X must be either 0 or a
+                            valid dimensional expression consisting of a non-
+                            negative number immediately followed by a unit
+                            symbol. The available unit symbols, along with
+                            their meanings, are:
+                            ${B}cm${N} - centimeters,
+                            ${B}mm${N} - milimeters,
+                            ${B}pt${N} - points,
+                            ${B}bp${N} - PostScript points, equal to 1/72 inches,
+                            ${B}dd${N} - Didot points,
+                            ${B}cc${N} - ciceros,
+                            ${B}pc${N} - picas,
+                            ${B}in${N} - inches,
+                            ${B}sp${N} - TeX scaled points, equal to 1/65536 pt.
+                            The default margin size is $DEFAULT_MARGIN. 
+
+      ${B}-p=XXX${N}                Set paper format. XXX must be one of the paper
+                            formats known to llpdf. Use the option  ${B}--list${N}
+                            to display all available paper formats. 
+                            The default paper format is $B$DEFAULT_PAPER$N.
+
+      ${B}--list${N}                Display all paper formats which can be used as
+                            arguments for the -p option. New paper formats
+                            can be configured by editing the script source.
+
+      ${B}--landscape${N}           Landscape mode. Paper is rotated by 90 degrees
+                            from its default orientation.
+
+      ${B}-i${N}                    Interpolate images.  Setting this flag has the
+                            effect of telling PDF readers to use an inter-
+                            polation algorithm to smooth the appearance of
+                            images whenever the resolution of the image is
+                            smaller than the display resolution. This flag
+                            has no effect on the image data itself, stored
+                            losslessly within a PDF file.
+
+      ${B}-f${N}                    Force overwrite.  If the specified output file
+                            exists, it will be overwritten with no warning
+                            displayed to the user.
+
+      ${B}-v${N}                    Verbose mode.  The program will print messages
+                            with additional info about its operation.
+
+      ${B}--help${N}                Displays this help screen.
+
+
+${U}Basic examples of usage${N}:
+
+$B$self -m=20mm scan.jpeg document.pdf$N
+      Creates a single-page PDF file with the image in 'scan.jpeg' scaled
+      proportionally to fit the default page size with 20mm margins
+
+$B$self -sf -m=0 -p=B1 poster.png poster.pdf$N
+      Creates a single-page PDF file in ISO/DIN B1 paper format. The image
+      from the file 'poster.png' will be stretched to fill the entire page
+      (margin is set to zero). If the file 'poster.pdf' exists, it will be
+      overwritten.
+
+
+${U}Advanced examples of usage${N}:
+
+$B$self -m=0.5in -p=Letter -va scanned-page*.tiff document.pdf$N
+      Reads all files that arise from the shell expansion of the expression
+      'scanned-page*.tiff' and make a PDF in Letter paper format with those
+      images as pages, setting the margin width to 1/2 inch. The images are
+      scaled in an aspect ratio preserving way. Script runs in verbose mode
+
+$B$self -m=20pt -ip=A5 --landscape *.jpeg pages.pdf$N
+      Landscape mode A5 output with 20pt margins. All *.jpeg files in the
+      current directory will be included as pages. The 'interpolate' flag
+      will be set in the PDF file
+
+$B$self -s -m=0 -p=Slide slide*.png presentaion.pdf$N
+      Creates a PDF file with paper format corresponding to 35 mm slides.
+      Suitable for presentations for use with digital projectors.\n"
+	exit
+}
+# -------------------------------------------------------------------
+#
+### die()
+# Print the message ($1) and exit with error
+die() 
+{
+	echo -e "$1"
+	exit -1
+}
+# -------------------------------------------------------------------
+#
+### log_v()
+# Print the message ($1) if we are in verbose mode.
+# The function reads the global variable VERBOSE.
+# The message is sent to the file descriptor $2 or
+# to stdout if $2 is empty
+log_v() 
+{
+	if (( $VERBOSE ))
+	then
+		if [[ "x$2" == "x" ]]
+		then
+			echo -e "$1"
+		else
+			echo -e "$1" >&$2
+		fi
+	fi
+}
+# -------------------------------------------------------------------
+#
+### list_papers()
+# Print a list of paper format names available.
+# The function reads the global variable $PAPER_SIZE.
+list_papers() 
+{
+	local colwidth=10
+	local cols=3
+	local cur_col=0
+	echo "Available paper formats:"
+	for p in "${!PAPER_SIZE[@]}"
+	do
+		len=${#p}
+		pad=""
+		i=0
+		for ((i=0; i<$colwidth-$len; i++)); do pad=" $pad"; done
+		echo -n "$p$pad"
+		((cur_col++))
+		if [[ $cur_col -eq $cols ]]
+		then
+			cur_col=0
+			echo ""
+		fi
+	done
+	[[ $cur_col -gt 0 ]] && echo ""
+	exit
+}
+# -------------------------------------------------------------------
+#
+### validate_dim()
+# Return 0 or 1 depending on whether the dimension string
+# ($1) is a valid (non-negative) dimension in LaTeX format
+# e.g. "14pt" -->  1
+#      "30foo" --> 0
+validate_dim()
+{
+	local input="$1"
+	printf -v units_concat "\\|%s" ${VALID_UNITS[@]}
+	pattern="^[[:digit:].]*[[:digit:]]\(${units_concat:2}\)\\?\$"
+	match=$(echo "$input" | grep -e "$pattern")
+	if [[ ${#match} -gt 0 ]]
+	then
+		# we need to check whether the part before the
+		# unit is a valid numer, and not, say, ..0.6..
+		# First, we cut out the units
+		number=$(echo "$input" | sed -e "s/[^[:digit:].]//g")
+		# number must be nonempty and the last char musn't be a point
+		len=$(( ${#number} - 1 ))
+		if [[ $len -eq -1 || "x${number:$len:1}" == "x." ]]
+		then
+			echo "0"
+			return
+		fi
+		# if the first char is zero, the following char must be a point
+		if [[ "x${number:0:1}" == "x0" && ${#number} -gt 1 && "x${number:1:1}" != "x." ]]
+		then
+			echo "0"
+			return
+		fi
+		# Finally, there must be at most one floating point.
+		dots="${number//[^.]}"
+		if [[ ${#dots} -gt 1 ]]
+		then
+			echo "0"
+			return
+		fi
+	else
+		echo "0"
+		return
+	fi
+	echo "1"
+}
+# -------------------------------------------------------------------
+#
+### check_dimension()
+# Find out whether the dimension stored in the variable is
+# valid and exit with error if it isn't.
+# Arguments:
+# $1 -	dimension to validate
+# $2 -	user-friendly name representing what this dimension is
+#	supposed to measure
+check_dimension()
+{
+	local is_valid=$(validate_dim "$1")
+	if [[ $is_valid -eq 0 ]]
+	then
+		echo "Invalid $2: $1"
+		echo "Supported units are: ${VALID_UNITS[@]}"
+		exit -1
+	fi
+}
+# -------------------------------------------------------------------
+#
+### dim2bp()
+# Converts any dimension to bp units (PostScript points)
+# Arguments:
+# $1 -	LaTeX dimension to be converted
+dim2bp()
+{
+	unit=$(echo "$1" | sed -e "s/[[:digit:].]//g")
+	if [[ "O$unit" == "O" ]]
+	then
+		unit="$DEFAULT_UNIT"
+	fi
+	multiplier="0"
+	case "$unit" in
+		bp)	multiplier="1";;
+		pt)	multiplier="(72/72.27)";;
+		mm)	multiplier="(72/25.4)";;
+		cm)	multiplier="(72/2.54)";;
+		in)	multiplier="72";;
+		pc)	multiplier="(6/72.27)";;
+		dd)	multiplier="((1238*72)/(72.27*1157))";;
+		cc)	multiplier="((12*1238*72)/(72.27*1157))";;
+		sp)	multiplier="(65536*72/72.27)";;
+	esac
+	number=$(echo "$1" | sed -e "s/[^[:digit:].]//g")
+	echo "scale=6; $number * $multiplier" | bc
+}
+# -------------------------------------------------------------------
+#
+### check_dependency()
+# Checks whether the utility program ($1) is found in $PATH
+# and terminates the script if not
+check_dependency()
+{
+	local q=`which $1 2>/dev/null`
+	[[ "x${q:0:1}" == "x/" ]] || die "Utility program $1 not found"
+}
+# -------------------------------------------------------------------
+#
+### assert_fexists()
+# Checks whether the file ($1) exists,
+# otherwise terminates the script with error
+assert_fexists()
+{ 
+	[[ -f "$1" ]] || die "Error: file $1 not found"
+}
+# -------------------------------------------------------------------
+#
+### warn_if_exists()
+# Checks whether the file ($1) exists (output overwrite protection).
+# The function reads the global variable FORCING.
+warn_if_exists()
+{ 
+	if [[ -f "$1" ]]
+	then
+		if (( $FORCING ))
+		then
+			log_v "Output file $1 will be overwritten"
+		else
+			echo -n "File $1 exists. Overwrite? [y/N]: "
+			read answer
+			if [ "x${answer:0:1}" != "xy" ]
+			then
+				exit
+			else
+				log_v "Output file $1 will be overwritten"
+			fi
+		fi
+	fi
+}
+# -------------------------------------------------------------------
+#
+### get_scale()
+# Calculates image scaling based on constraints
+get_scale()
+{
+	# Arguments:
+	# $1 = 'x'|'y'
+	# $2 = bool is_landscape_mode
+	# $3 = int image_width  [px]
+	# $4 = int image_height [px]
+	# $5 = float box_width  [pt]
+	# $6 = float box_height [pt]
+	local image_size_constraint=1
+	local box_size_constraint=1
+	declare -i is_x=1
+	if [[ "t$1" == "ty" ]]; then is_x=0; fi
+	if (( $is_x ))
+	then
+		image_size_constraint=$3
+		if (( $2 ))
+		then # Landscape
+			box_size_constraint=$6
+		else # Portrait
+			box_size_constraint=$5
+		fi
+	else
+		image_size_constraint=$4
+		if (( $2 ))
+		then # Landscape
+			box_size_constraint=$5
+		else # Portrait
+			box_size_constraint=$6
+		fi
+	fi
+	# return the calculated scale
+	echo "scale=5; $box_size_constraint/$image_size_constraint" | bc
+}
+# -------------------------------------------------------------------
+#
+### img_is_fat()
+# Return 0 or 1 depending on whether the proportions of
+# the image are fatter than the proportions of the page.
+img_is_fat()
+{
+	# Arguments:
+	# $1 = bool is_landscape_mode
+	# $2 = int image_width  [px]
+	# $3 = int image_height [px]
+	# $4 = float box_width  [pt]
+	# $5 = float box_height [pt]
+	if (( $1 ))
+	then
+		# Landscape mode: tell whether img_w*view_w > view_h*img_h
+		echo "scale=0; $2*$4 > $5*$3" | bc
+	else
+		# Portrait mode: tell whether img_w*view_h > view_w*img_h
+		echo "scale=0; $2*$5 > $4*$3" | bc
+	fi
+}
+#
+#============ Command line parsing and validation ===================
+#
+file_count=0
+for word in "$@"
+do
+	if [[ "x${word:0:1}" == "x-" && "x${word:1:1}" != "x" ]]
+	then # We have a dash (-) followed by something
+		analyse_option "${word:1}"
+	else # Assume it's a file name or piped input/output
+		INFILES[$file_count]="$word"
+		((file_count++))
+	fi
+done
+# ------------ Now the command line has been analysed ---------------
+[[ "x$MODE" == "xh" ]] && print_help  # Print help if requested
+[[ "x$MODE" == "xl" ]] && list_papers # Print paper list if requested
+# Otherwise, we are in processing mode.
+# Check whether enough files were specified
+[[ "$file_count" -gt 1 ]] || die "Input and output files were not specified correctly.\n\
+For usage info, run $0 --help"
+# Last specified file is output
+last=$((file_count-1))
+OUTFILE="${INFILES[$last]}"
+unset INFILES[$last] file_count last
+# Set paper format
+declare -i paper_found=0
+selected="${PAPER_SELECTION,,}" # to lower case
+for p in "${!PAPER_SIZE[@]}"
+do # search array keys matching specified paper
+	if [[ "x$selected" == "x${p,,}" ]]
+	then
+		paper_found=1
+		PAPER_SELECTION="$p"
+		break
+	fi
+done
+# If paper not found, die.
+[[ $paper_found -eq 0 ]] && die "Could not find definitions for the specified paper format: $PAPER_SELECTION"
+unset paper_found
+# Check for the necessary utilities
+checks=("gs" "convert" "identify" "bc" "xxd" "sed")
+for program in "${checks[@]}"; do
+	check_dependency $program
+done
+# Validate infile arguments
+for f in "${INFILES[@]}"; do
+	assert_fexists "$f"
+done
+# Validate outfile
+warn_if_exists "$OUTFILE"
+# Validate margin
+check_dimension "$MARGIN" 'margin'
+#
+#-------------- Preparation of processing parameters ----------------
+#
+page_count=${#INFILES[@]}
+if (( $LANDSCAPE ))
+then 
+	orientation="Landscape"
+else
+	orientation="Portrait"
+fi
+if (( $INTERPOLATE ))
+then
+	interpolate="true"
+else
+	interpolate="false"
+fi
+# All dimensions are in big points (1 inch = 72 points)
+paper_w="${PAPER_SIZE[$PAPER_SELECTION]%x*}"
+paper_h="${PAPER_SIZE[$PAPER_SELECTION]#*x}"
+paper_dims="$paper_w $paper_h"
+matrix="[1 0 0 -1 0 0]" # Default transformation matrix
+m_pt=$(dim2bp "$MARGIN") # margin in points
+# Calculate usable page area (page minus margins).
+view_w=$(echo "scale=3; $paper_w-(2*$m_pt)" | bc)
+view_h=$(echo "scale=3; $paper_h-(2*$m_pt)" | bc)
+pathology=$(echo "scale=0; $view_h < 1 || $view_w < 1" | bc)
+if (( $pathology ))
+then
+	log_v "Warning: the entire page area consists of margins"
+	view_h=0
+	view_w=0
+fi
+#
+#------------------- PostScript generation --------------------------
+#
+generate_postscript()
+{
+	# Parameters of the PostScript preamble
+	local hexLineLength=36 # line length for hex data in the intermediate PostScript
+	local bufferSize=64 # buffer length for line reads (must be at least hexLineLength plus a safe margin)
+	local boundaryString="%--boundary--" # end of data mark
+	# Print PS preamble
+	echo -e "%!PS-Adobe-3.0\n%%Pages: $page_count\n%%DocumentData: Clean7Bit\n%%LanguageLevel: 2\
+		\n%%DocumentMedia: $PAPER_SELECTION $paper_dims 0 () ()\n%%BoundingBox: 0 0 $paper_dims\n%%EndComments"
+	# Print imaging functions definitions
+	echo -e "/hexLine $bufferSize string def\n/readTillBoundary {\n{ currentfile hexLine readline\n  not { pop exit } if\
+		\n  ($boundaryString) eq { exit } if\n} loop\n} def\n/longImage { image readTillBoundary } def"
+	declare -i current_page=1
+	# Loop over input files, generating PS pages
+	log_v "Generating $orientation $PAPER_SELECTION PDF" $log
+	for infile in "${INFILES[@]}"
+	do
+		# Print page preamble
+		echo -e "%%Page: $current_page $current_page\n%%BeginPageSetup\n%%PageOrientation: $orientation\
+			\n%%PageMedia: $PAPER_SELECTION\n%%PageBoundingBox: 0 0 $paper_dims\n%%EndPageSetup"
+		# ----------------- Get image parameters --------------------------------
+		img_w=$(identify -format "%[fx:w]" "$infile")
+		img_h=$(identify -format "%[fx:h]" "$infile")
+		local colors=$(identify -format "%[colorspace]:%z" "$infile")
+		local colorspace="${colors%:*}" # Color Space
+		bpc="${colors#*:}" # Bits per channel (depth)
+		if [[ "x$colorspace" == "xGray" ]]
+		then
+			channels="gray"
+			colorDevice="/DeviceGray"
+			decodeArray="[0 1]"
+		else # Otherwise we have to assume $colorspace == "sRGB" due to limitations of PostScript
+			# Perhaps decoding Mono could be doable in the future, but endianness is a problem.
+			channels="rgb"
+			colorDevice="/DeviceRGB"
+			decodeArray="[0 1 0 1 0 1]"
+		fi
+		log_v "Page $current_page: $infile [${img_w}x${img_h} px $colorspace image]" $log
+		# Set transformation matrix for the image depending on page orientation
+		if (( $LANDSCAPE )); then matrix="[0 1 1 0 $img_w 0]"; else matrix="[1 0 0 -1 0 0]"; fi
+		# Placing the image on the page
+		room=$(echo "scale=0; $view_w > 0 && $view_h > 0" | bc) # whether there's room on the page
+		if (( $room ))
+		then
+			# Init image placement vars
+			local x=0
+			local y="$paper_h"
+			local scale_x=0
+			local scale_y=0
+			if (( $img_w*$img_h > 0 )) # only embed nonempty images
+			then
+				# Calculate scaling parameters
+				if [[ "x$MODE" == "xa" ]] # Aspect-ratio preserving mode
+				then
+					local piggy=$(img_is_fat $LANDSCAPE $img_w $img_h $view_w $view_h)
+					# whether image aspect wider than viewport aspect
+					if (( $piggy ))
+					then	# Fat image on a slim page
+						# Scale calculated based on the x scale
+						scale_x=$(get_scale "x" $LANDSCAPE $img_w $img_h $view_w $view_h)
+						scale_y="$scale_x"
+					else	# Tall image on a fat page
+						# Scale calculated based on the y scale
+						scale_y=$(get_scale "y" $LANDSCAPE $img_w $img_h $view_w $view_h)
+						scale_x="$scale_y"
+					fi
+					# Calculate position of the top left corner (pixel (0,0))
+					# so that the image is centered on the page
+					if (( $LANDSCAPE ))
+					then	# margin + 0.5 view_box is the center of the page
+						x=$(echo "scale=3; $m_pt+0.5*($view_w-($scale_x*$img_h))" | bc)
+						y=$(echo "scale=3; $m_pt+0.5*($view_h+($scale_y*$img_w))" | bc)
+					else
+						x=$(echo "scale=3; $m_pt+0.5*($view_w-($scale_x*$img_w))" | bc)
+						y=$(echo "scale=3; $m_pt+0.5*($view_h+($scale_y*$img_h))" | bc)
+					fi
+				elif [[ "x$MODE" == "xs" ]] # Stretching mode
+				then
+					# Scales calculated independently
+					if (( $LANDSCAPE ))
+					then # x and y switch positions
+						scale_x=$(get_scale "y" $LANDSCAPE $img_w $img_h $view_w $view_h)
+						scale_y=$(get_scale "x" $LANDSCAPE $img_w $img_h $view_w $view_h)
+					else
+						scale_x=$(get_scale "x" $LANDSCAPE $img_w $img_h $view_w $view_h)
+						scale_y=$(get_scale "y" $LANDSCAPE $img_w $img_h $view_w $view_h)
+					fi
+					# Calculate position of the top left corner of the image
+					x="$m_pt"
+					y=$(echo "scale=3; $paper_h - $m_pt" | bc)
+				fi
+				# ------------------------------ Print image code -------------------------------------
+				# Scale and translation
+				log_v "     Embedding at [$scale_x, $scale_y] pts/pixel" $log
+				echo -e "$x $y translate\n$scale_x $scale_y scale"
+				# Image command - the part before data
+				echo -e "$colorDevice setcolorspace\n<<\n/ImageType 1\n/Width $img_w\n/Height $img_h\
+					\n/ImageMatrix $matrix\n/BitsPerComponent $bpc\n/Decode $decodeArray\
+					\n/Interpolate $interpolate\n/DataSource currentfile\
+					\n/ASCIIHexDecode filter\n>>\nlongImage"
+				# Put image raw RGB data in hexadecimal into PostScript
+				convert "$infile" -size ${img_w}x${img_h} -depth $bpc $channels:- | xxd -ps -c $hexLineLength -
+				# EOD for the filter and data boundary
+				echo -e ">\n$boundaryString"
+				# -------------------------------------------------------------------------------------
+			fi
+		else # insuffiecient space on the page
+			log_v "     Image not embedded due to insufficient space on the page" $log
+		fi
+		echo -e "showpage\n" # Showpage command
+		((current_page++))
+	done
+	# Print PS trailer
+	echo -e "%%Trailer\n%%EOF\n"
+	log_v "Finished PostScript generation" $log
+}
+# Uncomment for debugging Postscript output:
+# generate_postscript > ps_dump.ps
+#
+#
+# ==================== Main processing command ======================
+#
+#
+curdir=`pwd` # Record current directory
+tempOut=$( mktemp -q -u --tmpdir="$curdir" "XXXXXX.pdf.part" )
+tempErr="${tempOut}.log"
+
+generate_postscript | gs			\
+ -o "$tempOut"					\
+ -sDEVICE=pdfwrite				\
+ -dDEVICEWIDTHPOINTS="$paper_w"			\
+ -dDEVICEHEIGHTPOINTS="$paper_h"		\
+ -dAntiAliasColorImage=false			\
+ -dAntiAliasGrayImage=false			\
+ -dAntiAliasMonoImage=false			\
+ -dAutoFilterColorImages=false			\
+ -dAutoFilterGrayImages=false			\
+ -dDownsampleColorImages=false			\
+ -dDownsampleGrayImages=false			\
+ -dDownsampleMonoImages=false			\
+ -dColorConversionStrategy=/LeaveColorUnchanged	\
+ -dConvertCMYKImagesToRGB=false			\
+ -dConvertImagesToIndexed=false			\
+ -dUCRandBGInfo=/Preserve			\
+ -dPreserveHalftoneInfo=true			\
+ -dPreserveOPIComments=true			\
+ -dPreserveOverprintSettings=true		\
+ -dEncodeColorImages=true			\
+ -dEncodeGrayImages=true			\
+ -dEncodeMonoImages=true			\
+ -dDetectDuplicateImages=true			\
+ -_ 1>/dev/null 2>"$tempErr"
+
+output_status=$?
+ret=0
+if [[ $output_status -eq 0 ]]
+then # gs ran smoothly
+	[[ -f "$tempErr" ]] && rm -f "$tempErr"
+	mv -f "$tempOut" "$OUTFILE"
+else # there was an error in Ghostscript
+	ret=1
+	error_msg=""
+	if [[ -f "$tempErr" ]]
+	then
+		error_msg=$(<"$tempErr")
+		rm -f "$tempErr"
+		echo "There was an error during PostScript generation."
+		echo "$error_msg"
+		echo "No output was generated."		
+	fi
+	[[ -f "$tempOut" ]] && rm -f "$tempOut"
+fi
+
+exec 7>&- # Remove fd 7
+exit $ret
+# ===================================================================
+#
+# Done!
