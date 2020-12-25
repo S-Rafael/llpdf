@@ -1,0 +1,79 @@
+--------------------------------------------------------------------------
+                         Readme file for llpdf
+--------------------------------------------------------------------------
+
+--------------------------------------------------------------------------
+                         Introduction
+--------------------------------------------------------------------------
+llpdf is a Bash script for quick conversion of graphics images into PDFs.
+Its main distinguishing features are:
+- Support for multipage PDFs
+- The ability to set page size and margins
+- Aspect ratio preserving or stretchy scaling
+- Guaranteed lossless compression of graphics images: no downsampling, no
+  lossy JPEG-style compression, all pixels faithfully represented in PDF.
+
+--------------------------------------------------------------------------
+                         Requirements
+--------------------------------------------------------------------------
+In order to run llpdf, you need a system with Bash version at least 4
+and the following software:
+- ImageMagick (provides the 'convert' command)
+- Ghostscript (provides the 'gs' command).
+
+--------------------------------------------------------------------------
+                         Installation
+--------------------------------------------------------------------------
+Simply drop the llpdf script in a directory included in your $PATH and 
+grant execution rights.
+
+--------------------------------------------------------------------------
+                         Usage
+--------------------------------------------------------------------------
+Run the following command in your terminal:
+llpdf --help
+to obtain usage information. Here are some examples of what you can do:
+
+llpdf -m=20mm scan.jpeg document.pdf
+      Creates a single-page PDF file with the image in 'scan.jpeg' scaled
+      proportionally to fit the default page size with 20mm margins
+
+llpdf -sf -m=0 -p=B1 poster.png poster.pdf
+      Creates a single-page PDF file in ISO/DIN B1 paper format. The image
+      from the file 'poster.png' will be stretched to fill the entire page
+      (margin is set to zero). If the file 'poster.pdf' exists, it will be
+      overwritten.
+
+llpdf -m=0.5in -p=Letter -va scanned-page*.tiff document.pdf
+      Reads all files that arise from the shell expansion of the expression
+      'scanned-page*.tiff' and make a PDF in Letter paper format with those
+      images as pages, setting the margin width to 1/2 inch. The images are
+      scaled in an aspect ratio preserving way. Script runs in verbose mode
+
+./llpdf -m=20pt -ip=A5 --landscape *.jpeg pages.pdf
+      Landscape mode A5 output with 20pt margins. All *.jpeg files in the
+      current directory will be included as pages. The 'interpolate' flag
+      will be set in the PDF file
+
+--------------------------------------------------------------------------
+                         Author
+--------------------------------------------------------------------------
+llpdf was originally written by Rafael M. Siejakowski (www.rs-math.net)
+and is currently hosted on GitHub.
+
+--------------------------------------------------------------------------
+                         License information
+--------------------------------------------------------------------------
+llpdf is licensed under the terms of the GNU GPL license:
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+--------------------------------------------------------------------------
+
