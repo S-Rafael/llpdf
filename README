@@ -50,7 +50,7 @@ llpdf -m=0.5in -p=Letter -va scanned-page*.tiff document.pdf
       images as pages, setting the margin width to 1/2 inch. The images are
       scaled in an aspect ratio preserving way. Script runs in verbose mode
 
-./llpdf -m=20pt -ip=A5 --landscape *.jpeg pages.pdf
+llpdf -m=20pt -ip=A5 --landscape *.jpeg pages.pdf
       Landscape mode A5 output with 20pt margins. All *.jpeg files in the
       current directory will be included as pages. The 'interpolate' flag
       will be set in the PDF file
